@@ -8,7 +8,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COMMAND_TIMEOUT_SECONDS = 8
 MAX_COMMAND_OUTPUT = 4000
+MAX_OUTPUT_LENGTH = 3000
+TRUNCATION_WARNING = (
+    f"\n\n...[ALERTA DEL SISTEMA: SALIDA TRUNCADA A {MAX_OUTPUT_LENGTH} "
+    "CARACTERES PARA PROTEGER VRAM. LEE EL ARCHIVO POR PARTES SI ES NECESARIO]..."
+)
 _BLOCKED_DIRECTORIES = {".git", "venv", "__pycache__"}
+
+
+def limitar_salida(texto: str) -> str:
+    """Limit tool output while reserving space for the VRAM warning."""
+    if len(texto) <= MAX_OUTPUT_LENGTH:
+        return texto
+    return texto[: MAX_OUTPUT_LENGTH - len(TRUNCATION_WARNING)] + TRUNCATION_WARNING
 
 
 def resolver_ruta(ruta: str) -> Path:
@@ -33,10 +45,12 @@ def leer_archivo(ruta: str) -> str:
     try:
         ruta_final = resolver_ruta(ruta)
         if not ruta_final.is_file():
-            return f"Error: No se encontró un archivo válido para {ruta!r}."
-        return ruta_final.read_text(encoding="utf-8", errors="replace")
+            return limitar_salida(f"Error: No se encontró un archivo válido para {ruta!r}.")
+        return limitar_salida(
+            ruta_final.read_text(encoding="utf-8", errors="replace")
+        )
     except (OSError, ValueError) as e:
-        return f"Error al leer {ruta!r}: {e}"
+        return limitar_salida(f"Error al leer {ruta!r}: {e}")
 
 
 def validar_destino_escritura(ruta: str, contenido: str) -> str | None:

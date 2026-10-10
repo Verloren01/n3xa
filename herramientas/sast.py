@@ -13,8 +13,19 @@ SEMGREP_EXECUTABLE = Path.home() / ".local/share/venvs/n3xa-semgrep/bin/semgrep"
 SEMGREP_TIMEOUT_SECONDS = 60
 MAX_COMMAND_OUTPUT = 4000
 MAX_SEMGREP_FINDINGS = 20
-MAX_SEMGREP_OUTPUT = 12000
+MAX_OUTPUT_LENGTH = 3000
+MAX_SEMGREP_OUTPUT = MAX_OUTPUT_LENGTH
+TRUNCATION_WARNING = (
+    f"\n\n...[ALERTA DEL SISTEMA: SALIDA TRUNCADA A {MAX_OUTPUT_LENGTH} "
+    "CARACTERES PARA PROTEGER VRAM. LEE EL ARCHIVO POR PARTES SI ES NECESARIO]..."
+)
 _BLOCKED_DIRECTORIES = {".git", "venv", "__pycache__"}
+
+
+def _limitar_mensaje(texto: str) -> str:
+    if len(texto) <= MAX_OUTPUT_LENGTH:
+        return texto
+    return texto[: MAX_OUTPUT_LENGTH - len(TRUNCATION_WARNING)] + TRUNCATION_WARNING
 
 
 def _es_ruta_temporal_chainlit(ruta: str) -> bool:
@@ -45,23 +56,27 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
     try:
         ruta_final = resolver_ruta(ruta)
     except (OSError, ValueError) as e:
-        return f"Error: Ruta de escaneo no permitida: {e}"
+        return _limitar_mensaje(f"Error: Ruta de escaneo no permitida: {e}")
 
     ruta_original = Path(ruta).expanduser()
     if not ruta_original.is_absolute():
         ruta_original = PROJECT_ROOT / ruta_original
     if ruta_original.is_symlink():
-        return "Error: No se permite escanear un enlace simbólico."
+        return _limitar_mensaje("Error: No se permite escanear un enlace simbólico.")
     if not ruta_final.exists():
-        return f"Error: No existe la ruta de escaneo {ruta!r}."
+        return _limitar_mensaje(f"Error: No existe la ruta de escaneo {ruta!r}.")
     if not (ruta_final.is_file() or ruta_final.is_dir()):
-        return f"Error: La ruta de escaneo {ruta!r} no es un archivo o directorio."
+        return _limitar_mensaje(
+            f"Error: La ruta de escaneo {ruta!r} no es un archivo o directorio."
+        )
     if any(parte in _BLOCKED_DIRECTORIES for parte in ruta_final.relative_to(PROJECT_ROOT).parts):
-        return "Error: No se permite escanear directorios internos del entorno."
+        return _limitar_mensaje(
+            "Error: No se permite escanear directorios internos del entorno."
+        )
 
     executable = str(SEMGREP_EXECUTABLE) if SEMGREP_EXECUTABLE.is_file() else shutil.which("semgrep")
     if executable is None:
-        return (
+        return _limitar_mensaje(
             "Error: Semgrep no está instalado o no se encuentra en PATH. "
             "Instala requirements-sast.txt en el entorno SAST aislado para habilitar el escaneo."
         )
@@ -77,18 +92,20 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
             shell=False,
         )
     except FileNotFoundError:
-        return (
+        return _limitar_mensaje(
             "Error: No se encontró el ejecutable de Semgrep. "
             "Instala requirements-sast.txt en el entorno SAST aislado."
         )
     except subprocess.TimeoutExpired:
-        return f"Error: Semgrep superó el límite de {SEMGREP_TIMEOUT_SECONDS} segundos."
+        return _limitar_mensaje(
+            f"Error: Semgrep superó el límite de {SEMGREP_TIMEOUT_SECONDS} segundos."
+        )
     except OSError as e:
-        return f"Error: No se pudo iniciar Semgrep: {e}"
+        return _limitar_mensaje(f"Error: No se pudo iniciar Semgrep: {e}")
 
     if not resultado.stdout.strip():
         detalle = resultado.stderr.strip()[:MAX_COMMAND_OUTPUT]
-        return (
+        return _limitar_mensaje(
             f"Error: Semgrep terminó con código {resultado.returncode} "
             f"sin generar JSON. {detalle}"
         )
@@ -97,13 +114,19 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
         informe: Any = json.loads(resultado.stdout)
     except json.JSONDecodeError as e:
         detalle = (resultado.stderr.strip() or resultado.stdout.strip())[:MAX_COMMAND_OUTPUT]
-        return f"Error: Semgrep devolvió JSON inválido ({e}). {detalle}"
+        return _limitar_mensaje(
+            f"Error: Semgrep devolvió JSON inválido ({e}). {detalle}"
+        )
 
     if not isinstance(informe, dict):
-        return "Error: Semgrep devolvió un JSON con una estructura inesperada."
+        return _limitar_mensaje(
+            "Error: Semgrep devolvió un JSON con una estructura inesperada."
+        )
     resultados = informe.get("results")
     if not isinstance(resultados, list):
-        return "Error: La respuesta JSON de Semgrep no contiene una lista de hallazgos."
+        return _limitar_mensaje(
+            "Error: La respuesta JSON de Semgrep no contiene una lista de hallazgos."
+        )
 
     hallazgos = []
     for item in resultados[:MAX_SEMGREP_FINDINGS]:
@@ -132,16 +155,16 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
             valor = metadata.get(clave)
             if isinstance(valor, list):
                 metadata_resumida[clave] = [
-                    str(elemento)[:120] for elemento in valor[:5]
+                    str(elemento)[:80] for elemento in valor[:2]
                 ]
             elif valor is not None:
-                metadata_resumida[clave] = str(valor)[:200]
+                metadata_resumida[clave] = str(valor)[:120]
 
         hallazgos.append(
             {
-                "rule_id": str(item.get("check_id", "regla desconocida")),
-                "severity": str(extra.get("severity", "UNKNOWN")),
-                "path": ruta_hallazgo,
+                "rule_id": str(item.get("check_id", "regla desconocida"))[:200],
+                "severity": str(extra.get("severity", "UNKNOWN"))[:40],
+                "path": ruta_hallazgo[:300],
                 "line": ubicacion.get("line"),
                 "message": str(extra.get("message", ""))[:350],
                 "metadata": metadata_resumida,
@@ -166,7 +189,7 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
         errores_resumidos.append(str(detalle)[:400])
 
     resumen: dict[str, Any] = {
-        "ruta_escaneada": str(ruta_final.relative_to(PROJECT_ROOT)) or ".",
+        "ruta_escaneada": (str(ruta_final.relative_to(PROJECT_ROOT)) or ".")[:300],
         "hallazgos": hallazgos,
         "total_hallazgos": len(resultados),
         "hallazgos_omitidos_por_limite": max(0, len(resultados) - len(hallazgos)),
@@ -177,13 +200,37 @@ def ejecutar_semgrep(ruta: str = ".") -> str:
     if nota_ruta:
         resumen["nota"] = nota_ruta
 
+    truncado = len(resultados) > len(hallazgos)
     salida = json.dumps(resumen, ensure_ascii=False, default=str)
+    if len(salida) > MAX_SEMGREP_OUTPUT:
+        truncado = True
+    if truncado:
+        resumen["alerta_sistema"] = TRUNCATION_WARNING
+    salida = json.dumps(resumen, ensure_ascii=False, default=str)
+
     while len(salida) > MAX_SEMGREP_OUTPUT and resumen["hallazgos"]:
         resumen["hallazgos"].pop()
         resumen["hallazgos_omitidos_por_limite"] += 1
+        resumen["alerta_sistema"] = TRUNCATION_WARNING
         salida = json.dumps(resumen, ensure_ascii=False, default=str)
+
+    while len(salida) > MAX_SEMGREP_OUTPUT and resumen["errores_semgrep"]:
+        resumen["errores_semgrep"].pop()
+        resumen["alerta_sistema"] = TRUNCATION_WARNING
+        salida = json.dumps(resumen, ensure_ascii=False, default=str)
+
     if len(salida) > MAX_SEMGREP_OUTPUT:
-        resumen["errores_semgrep"] = []
-        resumen["nota"] = "Se omitieron detalles para respetar el límite de salida."
+        resumen = {
+            "ruta_escaneada": resumen["ruta_escaneada"][:100],
+            "hallazgos": [],
+            "total_hallazgos": len(resultados),
+            "hallazgos_omitidos_por_limite": len(resultados),
+            "cantidad_rutas_escaneadas": len(rutas_escaneadas),
+            "errores_semgrep": [],
+            "codigo_salida": resultado.returncode,
+            "alerta_sistema": TRUNCATION_WARNING,
+        }
+        if nota_ruta:
+            resumen["nota"] = nota_ruta[:200]
         salida = json.dumps(resumen, ensure_ascii=False, default=str)
     return salida

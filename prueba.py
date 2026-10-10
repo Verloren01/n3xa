@@ -1,14 +1,22 @@
+import hashlib
 import sqlite3
+from pathlib import Path
 
-def login(usuario, password):
-    # Contraseña quemada en el código (Mala práctica)
-    secret_key = "super_admin_123"
-    
-    conexion = sqlite3.connect("database.db")
-    cursor = conexion.cursor()
-    
-    # Vulnerabilidad crítica de OWASP: Inyección SQL (CWE-89)
-    query = f"SELECT * FROM usuarios WHERE user = '{usuario}' AND password = '{password}'"
-    cursor.execute(query)
-    
-    return cursor.fetchall()
+DB_PATH = Path(__file__).with_name("database.db")
+
+
+def login(usuario: str, password: str):
+    """Valida un usuario usando un hash de la contraseña y evita inyección SQL."""
+    if not usuario or not password:
+        return []
+
+    password_hash = hashlib.sha256(password.strip().encode("utf-8")).hexdigest()
+
+    try:
+        with sqlite3.connect(DB_PATH) as conexion:
+            cursor = conexion.cursor()
+            query = "SELECT * FROM usuarios WHERE user = ? AND password_hash = ?"
+            cursor.execute(query, (usuario, password_hash))
+            return cursor.fetchall()
+    except sqlite3.Error:
+        return []

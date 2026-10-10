@@ -7,24 +7,60 @@ from langchain_ollama import ChatOllama
 # ==========================================
 # 1. CONFIGURACIÓN DEL CEREBRO
 # ==========================================
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 llm = ChatOllama(model="qwen2.5-coder:7b", temperature=0.1)
 
 # ==========================================
 # 2. HERRAMIENTAS (MODO NATIVO)
 # ==========================================
+def _resolver_ruta(ruta: str) -> str:
+    """Resuelve una ruta dentro del proyecto y evita escapes de directorio."""
+    if not ruta or not isinstance(ruta, str):
+        raise ValueError("La ruta debe ser un texto no vacío.")
+
+    ruta_expandida = os.path.expanduser(ruta)
+    if os.path.isabs(ruta_expandida):
+        ruta_final = ruta_expandida
+    else:
+        ruta_final = os.path.join(PROJECT_ROOT, ruta_expandida)
+
+    ruta_final = os.path.realpath(ruta_final)
+    if os.path.commonpath([PROJECT_ROOT, ruta_final]) != PROJECT_ROOT:
+        raise ValueError(f"La ruta solicitada está fuera del proyecto: {ruta}")
+
+    return ruta_final
+
+
 def leer_archivo(ruta: str) -> str:
-    """Lee un archivo local en el disco del usuario."""
+    """Lee un archivo local dentro del directorio del proyecto."""
     try:
-        nombre_archivo = os.path.basename(ruta)
-        ruta_final = os.path.join(os.getcwd(), nombre_archivo)
-        
+        ruta_final = _resolver_ruta(ruta)
+
         if not os.path.exists(ruta_final):
-            return f"Error: El archivo {nombre_archivo} no se encontró en {os.getcwd()}."
-            
-        with open(ruta_final, "r", encoding="utf-8") as f:
+            return f"Error: El archivo {ruta} no se encontró en {PROJECT_ROOT}."
+
+        if not os.path.isfile(ruta_final):
+            return f"Error: La ruta {ruta} no es un archivo válido."
+
+        with open(ruta_final, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
+    except ValueError as e:
+        return f"Error: {str(e)}"
     except Exception as e:
-        return f"Error crítico al leer {ruta_final}: {str(e)}"
+        return f"Error crítico al leer {ruta}: {str(e)}"
+
+
+def extraer_json_herramienta(texto: str):
+    """Obtiene el primer bloque JSON con la clave 'herramienta' del texto."""
+    for match in re.finditer(r"\{.*?\}", texto, re.DOTALL):
+        bloque = match.group(0)
+        if '"herramienta"' not in bloque:
+            continue
+        try:
+            return json.loads(bloque)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 # ==========================================
 # 3. DIRECTRICES DEL SISTEMA
@@ -53,47 +89,41 @@ async def on_chat_start():
 async def on_message(message: cl.Message):
     historial = cl.user_session.get("historial")
     historial.append(("user", message.content))
-    
+
     msg = cl.Message(content="🧠 n3xa está pensando...")
     await msg.send()
-    
+
     try:
         respuesta = await llm.ainvoke(historial)
         texto_llm = respuesta.content.strip()
-        
-        # Buscamos cualquier bloque de texto que parezca un JSON con nuestra herramienta
-        match_json = re.search(r'\{[\s\S]*"herramienta"[\s\S]*\}', texto_llm)
-        
-        if match_json:
+
+        accion = extraer_json_herramienta(texto_llm)
+
+        if accion:
             try:
-                accion = json.loads(match_json.group(0))
-                
                 if accion.get("herramienta") == "leer_archivo":
                     archivo_objetivo = accion.get("ruta")
                     msg.content = f"⚙️ **Acción detectada:** Extrayendo `{archivo_objetivo}` del disco..."
                     await msg.update()
-                    
+
                     codigo_leido = leer_archivo(archivo_objetivo)
-                    
-                    # Le pasamos el código al LLM simulando que él usó la herramienta
-                    historial.append(("assistant", match_json.group(0)))
+
+                    historial.append(("assistant", json.dumps(accion, ensure_ascii=False)))
                     historial.append(("user", f"CONTENIDO DEL ARCHIVO:\n```\n{codigo_leido}\n```\n\nRealiza la auditoría de seguridad ahora."))
-                    
+
                     msg.content += "\n📂 **Archivo cargado.** Analizando vulnerabilidades..."
                     await msg.update()
-                    
-                    # Segunda llamada para la auditoría real
+
                     respuesta_final = await llm.ainvoke(historial)
                     texto_final = respuesta_final.content
-                    
+
                     historial.append(("assistant", texto_final))
                     msg.content = texto_final
                     await msg.update()
                     return
-            except json.JSONDecodeError:
-                pass # Si el regex atrapó basura, seguimos adelante
+            except (TypeError, ValueError):
+                pass
 
-        # Si no detectó intención de usar herramienta, responde normalmente
         historial.append(("assistant", texto_llm))
         msg.content = texto_llm
         await msg.update()

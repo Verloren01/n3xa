@@ -131,21 +131,31 @@ def ejecutar_comando(comando: str) -> str:
 
 
 def extraer_json_herramienta(texto: str) -> dict[str, Any] | None:
-    """Extrae un objeto JSON de herramienta antes del bloque de código."""
-    prefijo = texto.split("```", 1)[0]
+    """Extrae una orden JSON de texto o de un bloque Markdown JSON."""
+    regiones = [texto.split("```", 1)[0]]
+    for bloque in re.finditer(
+        r"```([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*?)```",
+        texto,
+    ):
+        lenguaje, contenido = bloque.groups()
+        if lenguaje.lower() == "json" or (
+            not lenguaje and contenido.lstrip().startswith("{")
+        ):
+            regiones.append(contenido)
+
     decoder = json.JSONDecoder()
-    cursor = 0
+    for region in regiones:
+        cursor = 0
+        while (inicio := region.find("{", cursor)) != -1:
+            try:
+                objeto, fin = decoder.raw_decode(region[inicio:])
+            except json.JSONDecodeError:
+                cursor = inicio + 1
+                continue
 
-    while (inicio := prefijo.find("{", cursor)) != -1:
-        try:
-            objeto, fin = decoder.raw_decode(prefijo[inicio:])
-        except json.JSONDecodeError:
-            cursor = inicio + 1
-            continue
-
-        if isinstance(objeto, dict) and isinstance(objeto.get("herramienta"), str):
-            return objeto
-        cursor = inicio + fin
+            if isinstance(objeto, dict) and isinstance(objeto.get("herramienta"), str):
+                return objeto
+            cursor = inicio + fin
 
     return None
 
@@ -166,9 +176,10 @@ def extraer_hallazgos(texto: str) -> list[dict[str, str]]:
     hallazgos: list[dict[str, str]] = []
     vistos: set[str] = set()
 
-    for linea in texto.splitlines():
-        coincidencia = re.search(
-            r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b",
+    texto_reporte = re.sub(r"```[\s\S]*?```", "", texto)
+    for linea in texto_reporte.splitlines():
+        coincidencia = re.match(
+            r"\s*(?:(?:[-*+]|\d+[.)])\s*)?\[?(CRITICAL|HIGH|MEDIUM|LOW)\]?\s*",
             linea,
             re.IGNORECASE,
         )
@@ -179,15 +190,21 @@ def extraer_hallazgos(texto: str) -> list[dict[str, str]]:
         if severidad not in severidades:
             continue
 
-        resumen = re.sub(r"^\s*[-*>\d.)|` ]+", "", linea).strip().strip("|").strip()
-        resumen = re.sub(r"[*`]", "", resumen)
+        resumen = re.sub(r"^\s*[-*+>\d.)|` ]+", "", linea).strip().strip("|").strip()
         resumen = re.sub(
-            r"\b(?:CRITICAL|HIGH|MEDIUM|LOW)\b\s*[:—-]?\s*",
+            r"^\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]\s*",
             "",
             resumen,
-            count=1,
             flags=re.IGNORECASE,
-        ).strip()
+        )
+        resumen = re.sub(
+            r"^(?:CRITICAL|HIGH|MEDIUM|LOW)\b\s*[:—-]?\s*",
+            "",
+            resumen,
+            flags=re.IGNORECASE,
+        )
+        resumen = re.sub(r"[*`]", "", resumen)
+        resumen = resumen.strip()
         resumen = re.sub(r"\s*\|\s*", " — ", resumen)
         resumen = resumen[:500]
         if not resumen or resumen in vistos:

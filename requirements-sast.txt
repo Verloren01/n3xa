@@ -1,0 +1,6 @@
+# Keep Semgrep in a dedicated environment: its OpenTelemetry 1.37 pin conflicts
+# with Chainlit's traceloop dependency, which requires OpenTelemetry >=1.38.
+# Install with:
+# uv venv --python venv/bin/python "$HOME/.local/share/venvs/n3xa-semgrep"
+# uv pip install --python "$HOME/.local/share/venvs/n3xa-semgrep/bin/python" -r requirements-sast.txt
+semgrep>=1,<2
